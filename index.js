@@ -14,6 +14,9 @@ module.exports.info = {
 
 module.exports.init = async function (router) {
     router.use(express.json({ limit: '50mb' }));
+    
+    // 後端啟動提示
+    console.log('[Incremental Save] 🚀 增量儲存與快取後端模組已啟動');
 
     // --- 1. 增量保存 (單人) ---
     router.post('/save-append', async (req, res) => {
@@ -24,7 +27,6 @@ module.exports.init = async function (router) {
             }
 
             const directories = req.user ? req.user.directories : require('../../src/directories');
-            // 防止目錄穿越攻擊
             const safeAvatarUrl = path.basename(avatar_url);
             const safeChatFile = path.basename(chat_file);
             const chatPath = path.join(directories.chats, safeAvatarUrl, safeChatFile);
@@ -36,8 +38,12 @@ module.exports.init = async function (router) {
 
             const appendText = newMessages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
             await fs.appendFile(chatPath, appendText, 'utf8');
+            
+            // 終端機成功提示
+            console.log(`[Incremental Save] ⚡ 成功增量寫入 ${newMessages.length} 條訊息至: ${safeChatFile}`);
             return res.json({ success: true });
         } catch (e) {
+            console.error('[Incremental Save] ❌ 寫入失敗:', e.message);
             return res.status(500).json({ error: e.message });
         }
     });
@@ -60,6 +66,8 @@ module.exports.init = async function (router) {
 
             const appendText = newMessages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
             await fs.appendFile(chatPath, appendText, 'utf8');
+            
+            console.log(`[Incremental Save] ⚡ (群組) 成功增量寫入 ${newMessages.length} 條訊息至: ${fileName}`);
             return res.json({ success: true });
         } catch (e) {
             return res.status(500).json({ error: e.message });
@@ -76,7 +84,6 @@ module.exports.init = async function (router) {
         try {
             const hash = crypto.createHash('sha256').update(targetUrl).digest('hex');
             const directories = req.user ? req.user.directories : require('../../src/directories');
-            // 相對路徑定位到 data/[user]/cache/images
             const cacheDir = path.join(directories.chats, '..', 'cache', 'images');
             await fs.mkdir(cacheDir, { recursive: true });
             const cacheFile = path.join(cacheDir, hash);
