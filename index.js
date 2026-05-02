@@ -20,36 +20,40 @@ module.exports.init = async function (router) {
     // --- 1. 增量保存 (單人) ---
     router.post('/save-append', async (req, res) => {
         try {
-            // 完美適配 ST 1.17.0 變數名稱變更
             const chat_file = req.body.chat_file || req.body.file_name;
-            const avatar_url = req.body.avatar_url || req.body.character_name || req.body.ch_name;
+            // 優先使用 character_name，並過濾掉可能帶有的圖片副檔名
+            let charFolder = req.body.character_name || req.body.ch_name || req.body.avatar_url;
             const expectedLines = req.body.expectedLines;
             const newMessages = req.body.newMessages;
 
-            if (!chat_file || !avatar_url || expectedLines === undefined || !newMessages) {
+            if (!chat_file || !charFolder || expectedLines === undefined || !newMessages) {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
 
+            // 確保資料夾名稱沒有副檔名 (例如 Tifa.png -> Tifa)
+            charFolder = charFolder.replace(/\.(png|webp|jpe?g|gif)$/i, '');
+
             const directories = req.user ? req.user.directories : require('../../src/directories');
-            const safeAvatarUrl = path.basename(avatar_url);
+            const safeCharFolder = path.basename(charFolder);
             
-            // ST 1.17.0 可能不帶副檔名，這裡自動補齊
             let safeChatFile = path.basename(chat_file);
             if (!safeChatFile.endsWith('.jsonl')) {
                 safeChatFile += '.jsonl';
             }
 
-            const chatPath = path.join(directories.chats, safeAvatarUrl, safeChatFile);
+            const chatPath = path.join(directories.chats, safeCharFolder, safeChatFile);
 
             let fileLines = 0;
             try {
                 const fileContent = await fs.readFile(chatPath, 'utf8');
-                fileLines = fileContent.trim().split('\n').filter(line => line.length > 0).length;
+                // 相容 Windows (\r\n) 與 Linux (\n) 的斷行
+                fileLines = fileContent.trim().split(/\r?\n/).filter(line => line.trim().length > 0).length;
             } catch (err) {
-                // 如果是全新對話，檔案可能尚不存在，此時 fileLines 為 0
+                // 檔案不存在
             }
 
             if (fileLines !== expectedLines) {
+                console.warn(`[Incremental Save] ⚠️ 行數不匹配 (路徑: ${chatPath}) | 預期: ${expectedLines} | 實際: ${fileLines}`);
                 return res.status(409).json({ error: `Line count mismatch: expected ${expectedLines} but got ${fileLines}` });
             }
 
@@ -82,11 +86,12 @@ module.exports.init = async function (router) {
             let fileLines = 0;
             try {
                 const fileContent = await fs.readFile(chatPath, 'utf8');
-                fileLines = fileContent.trim().split('\n').filter(line => line.length > 0).length;
+                fileLines = fileContent.trim().split(/\r?\n/).filter(line => line.trim().length > 0).length;
             } catch (err) {}
 
             if (fileLines !== expectedLines) {
-                return res.status(409).json({ error: 'Line count mismatch' });
+                console.warn(`[Incremental Save] ⚠️ (群組) 行數不匹配 | 預期: ${expectedLines} | 實際: ${fileLines}`);
+                return res.status(409).json({ error: `Line count mismatch: expected ${expectedLines} but got ${fileLines}` });
             }
 
             const appendText = newMessages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
@@ -99,8 +104,43 @@ module.exports.init = async function (router) {
         }
     });
 
-    // --- 3. 圖片快取代理 (保持不變) ---
+    // --- 3. 圖片快取代理 ---
     router.get('/image-proxy', async (req, res) => {
-        // ... (這部分保留之前的實作)
+        // ... (保持不變，由於長度限制我省略貼出，直接保留你原本的 image-proxy 區塊即可)
+        const targetUrl = req.query.url;
+        if (!targetUrl || (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://'))) {
+            return res.status(400).send('Invalid URL');
+        }
+
+        try {
+            const hash = crypto.createHash('sha256').update(targetUrl).digest('hex');
+            const directories = req.user ? req.user.directories : require('../../src/directories');
+            const cacheDir = path.join(directories.chats, '..', 'cache', 'images');
+            await fs.mkdir(cacheDir, { recursive: true });
+            const cacheFile = path.join(cacheDir, hash);
+
+            try {
+                const stats = await fs.stat(cacheFile);
+                if (stats.isFile() && stats.size > 0) {
+                    res.setHeader('Cache-Control', 'public, max-age=604800');
+                    res.setHeader('X-Image-Cache', 'HIT');
+                    return res.sendFile(cacheFile);
+                }
+            } catch (e) {}
+
+            const client = targetUrl.startsWith('https') ? https : http;
+            client.get(targetUrl, (proxyRes) => {
+                if (proxyRes.statusCode !== 200) return res.status(proxyRes.statusCode).send('Failed to fetch');
+
+                res.setHeader('Cache-Control', 'public, max-age=604800');
+                res.setHeader('X-Image-Cache', 'MISS');
+
+                const fileStream = fsSync.createWriteStream(cacheFile);
+                proxyRes.pipe(fileStream);
+                proxyRes.pipe(res);
+            }).on('error', () => res.status(500).send('Proxy error'));
+        } catch (e) {
+            res.status(500).send('Server Error');
+        }
     });
 };
