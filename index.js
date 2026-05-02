@@ -21,17 +21,17 @@ module.exports.init = async function (router) {
     router.post('/save-append', async (req, res) => {
         try {
             const chat_file = req.body.chat_file || req.body.file_name;
-            // 優先使用 character_name，並過濾掉可能帶有的圖片副檔名
-            let charFolder = req.body.character_name || req.body.ch_name || req.body.avatar_url;
+            
+            // 核心修復：強制優先使用 avatar_url 來推導 ST 官方資料夾名稱
+            const avatar = req.body.avatar_url || req.body.avatar;
+            let charFolder = avatar ? avatar.replace(/\.(png|webp|jpe?g|gif)$/i, '') : (req.body.character_name || req.body.ch_name);
+            
             const expectedLines = req.body.expectedLines;
             const newMessages = req.body.newMessages;
 
             if (!chat_file || !charFolder || expectedLines === undefined || !newMessages) {
                 return res.status(400).json({ error: 'Missing required fields' });
             }
-
-            // 確保資料夾名稱沒有副檔名 (例如 Tifa.png -> Tifa)
-            charFolder = charFolder.replace(/\.(png|webp|jpe?g|gif)$/i, '');
 
             const directories = req.user ? req.user.directories : require('../../src/directories');
             const safeCharFolder = path.basename(charFolder);
@@ -46,14 +46,12 @@ module.exports.init = async function (router) {
             let fileLines = 0;
             try {
                 const fileContent = await fs.readFile(chatPath, 'utf8');
-                // 相容 Windows (\r\n) 與 Linux (\n) 的斷行
-                fileLines = fileContent.trim().split(/\r?\n/).filter(line => line.trim().length > 0).length;
+                fileLines = fileContent.split(/\r?\n/).filter(line => line.trim().length > 0).length;
             } catch (err) {
-                // 檔案不存在
+                console.warn(`[Incremental Save] ⚠️ 讀取檔案失敗 (可能路徑錯誤或為新檔案):`, chatPath);
             }
 
             if (fileLines !== expectedLines) {
-                console.warn(`[Incremental Save] ⚠️ 行數不匹配 (路徑: ${chatPath}) | 預期: ${expectedLines} | 實際: ${fileLines}`);
                 return res.status(409).json({ error: `Line count mismatch: expected ${expectedLines} but got ${fileLines}` });
             }
 
@@ -86,11 +84,12 @@ module.exports.init = async function (router) {
             let fileLines = 0;
             try {
                 const fileContent = await fs.readFile(chatPath, 'utf8');
-                fileLines = fileContent.trim().split(/\r?\n/).filter(line => line.trim().length > 0).length;
-            } catch (err) {}
+                fileLines = fileContent.split(/\r?\n/).filter(line => line.trim().length > 0).length;
+            } catch (err) {
+                 console.warn(`[Incremental Save] ⚠️ (群組) 讀取檔案失敗:`, chatPath);
+            }
 
             if (fileLines !== expectedLines) {
-                console.warn(`[Incremental Save] ⚠️ (群組) 行數不匹配 | 預期: ${expectedLines} | 實際: ${fileLines}`);
                 return res.status(409).json({ error: `Line count mismatch: expected ${expectedLines} but got ${fileLines}` });
             }
 
@@ -106,7 +105,6 @@ module.exports.init = async function (router) {
 
     // --- 3. 圖片快取代理 ---
     router.get('/image-proxy', async (req, res) => {
-        // ... (保持不變，由於長度限制我省略貼出，直接保留你原本的 image-proxy 區塊即可)
         const targetUrl = req.query.url;
         if (!targetUrl || (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://'))) {
             return res.status(400).send('Invalid URL');
